@@ -1,0 +1,1110 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OSPF 邻居状态机解析</title>
+    <style>
+        :root {
+            --bg: #050816;
+            --panel: rgba(15, 23, 42, 0.86);
+            --soft: rgba(30, 41, 59, 0.62);
+            --line: rgba(148, 163, 184, 0.18);
+            --text: #f8fafc;
+            --muted: #94a3b8;
+            --faint: #64748b;
+            --blue: #38bdf8;
+            --green: #22c55e;
+            --amber: #f59e0b;
+            --purple: #a78bfa;
+            --red: #ef4444;
+            --radius: 8px;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            min-height: 100vh;
+            overflow: hidden;
+            font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+            color: var(--text);
+            background:
+                radial-gradient(circle at 26% 18%, rgba(56, 189, 248, 0.16), transparent 32%),
+                radial-gradient(circle at 80% 76%, rgba(167, 139, 250, 0.13), transparent 36%),
+                linear-gradient(135deg, #020617 0%, #0f172a 52%, #030712 100%);
+        }
+
+        button {
+            font: inherit;
+        }
+
+        .app {
+            height: 100vh;
+            display: grid;
+            grid-template-rows: auto 1fr;
+            gap: 10px;
+            padding: 12px;
+        }
+
+        .topbar {
+            display: grid;
+            grid-template-columns: 1fr auto;
+            gap: 16px;
+            align-items: center;
+            padding: 12px 16px;
+            border: 1px solid var(--line);
+            border-radius: var(--radius);
+            background: rgba(15, 23, 42, 0.78);
+            box-shadow: 0 18px 48px rgba(0, 0, 0, 0.28);
+            backdrop-filter: blur(14px);
+        }
+
+        .title h1 {
+            font-size: 22px;
+            letter-spacing: 0;
+            line-height: 1.1;
+        }
+
+        .title p {
+            margin-top: 6px;
+            color: var(--muted);
+            font-size: 13px;
+        }
+
+        .summary-chain {
+            margin-top: 8px;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+        }
+
+        .summary-chain span {
+            padding: 4px 7px;
+            border: 1px solid rgba(148, 163, 184, 0.16);
+            border-radius: 999px;
+            background: rgba(2, 6, 23, 0.38);
+            color: var(--faint);
+            font-size: 12px;
+        }
+
+        .controls {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .counter {
+            min-width: 96px;
+            padding: 8px 10px;
+            border: 1px solid rgba(56, 189, 248, 0.28);
+            border-radius: var(--radius);
+            background: rgba(56, 189, 248, 0.1);
+            color: var(--blue);
+            text-align: center;
+            font-family: "JetBrains Mono", Consolas, monospace;
+            font-weight: 800;
+        }
+
+        .btn {
+            height: 38px;
+            padding: 0 14px;
+            border: 1px solid var(--line);
+            border-radius: var(--radius);
+            background: rgba(255, 255, 255, 0.06);
+            color: var(--text);
+            cursor: pointer;
+            transition: transform 0.2s ease, background 0.2s ease, border-color 0.2s ease;
+        }
+
+        .btn:hover:not(:disabled) {
+            transform: translateY(-1px);
+            background: rgba(255, 255, 255, 0.1);
+            border-color: rgba(255, 255, 255, 0.3);
+        }
+
+        .btn.primary {
+            border-color: rgba(56, 189, 248, 0.4);
+            background: linear-gradient(135deg, rgba(56, 189, 248, 0.95), rgba(37, 99, 235, 0.9));
+            color: #031525;
+            font-weight: 850;
+        }
+
+        .btn.playing {
+            border-color: rgba(34, 197, 94, 0.42);
+            background: rgba(34, 197, 94, 0.14);
+            color: #bbf7d0;
+        }
+
+        .btn:disabled {
+            cursor: not-allowed;
+            opacity: 0.45;
+        }
+
+        .workspace {
+            min-height: 0;
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) 380px;
+            gap: 10px;
+        }
+
+        .main {
+            min-width: 0;
+            min-height: 0;
+            display: grid;
+            grid-template-rows: auto minmax(0, 1fr) auto;
+            gap: 10px;
+        }
+
+        .state-map {
+            display: grid;
+            grid-template-columns: repeat(7, minmax(92px, 1fr));
+            gap: 8px;
+            padding: 10px;
+            border: 1px solid var(--line);
+            border-radius: var(--radius);
+            background: rgba(15, 23, 42, 0.76);
+            overflow-x: auto;
+        }
+
+        .state-node {
+            min-width: 92px;
+            min-height: 84px;
+            padding: 9px;
+            border: 1px solid var(--line);
+            border-radius: var(--radius);
+            background: rgba(255, 255, 255, 0.04);
+            color: var(--muted);
+            cursor: pointer;
+            text-align: left;
+            transition: border-color 0.2s ease, background 0.2s ease, transform 0.2s ease;
+        }
+
+        .state-node:hover {
+            border-color: rgba(56, 189, 248, 0.5);
+            background: rgba(56, 189, 248, 0.08);
+        }
+
+        .state-node.active {
+            border-color: var(--blue);
+            background: rgba(56, 189, 248, 0.13);
+            color: var(--text);
+            transform: translateY(-1px);
+            box-shadow: 0 0 0 1px rgba(56, 189, 248, 0.16), 0 12px 26px rgba(0, 0, 0, 0.22);
+        }
+
+        .state-node.done {
+            border-color: rgba(34, 197, 94, 0.36);
+            background: rgba(34, 197, 94, 0.08);
+        }
+
+        .state-index {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 24px;
+            height: 24px;
+            border-radius: 50%;
+            background: rgba(148, 163, 184, 0.14);
+            color: var(--text);
+            font-family: "JetBrains Mono", Consolas, monospace;
+            font-size: 12px;
+            font-weight: 850;
+        }
+
+        .state-node.active .state-index {
+            background: var(--blue);
+            color: #031525;
+        }
+
+        .state-node.done .state-index {
+            background: var(--green);
+            color: #03120a;
+        }
+
+        .state-name {
+            display: block;
+            margin-top: 8px;
+            font-size: 14px;
+            font-weight: 850;
+        }
+
+        .state-small {
+            display: block;
+            margin-top: 4px;
+            color: var(--faint);
+            font-size: 11px;
+            line-height: 1.35;
+        }
+
+        .canvas-shell {
+            position: relative;
+            min-height: 0;
+            overflow: hidden;
+            border: 1px solid var(--line);
+            border-radius: var(--radius);
+            background:
+                linear-gradient(rgba(56, 189, 248, 0.05) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(56, 189, 248, 0.05) 1px, transparent 1px),
+                rgba(2, 6, 23, 0.78);
+            background-size: 42px 42px;
+            box-shadow: inset 0 0 90px rgba(0, 0, 0, 0.48);
+        }
+
+        #scene {
+            width: 100%;
+            height: 100%;
+            display: block;
+        }
+
+        .legend {
+            position: absolute;
+            left: 16px;
+            bottom: 14px;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            pointer-events: none;
+        }
+
+        .chip {
+            padding: 6px 9px;
+            border: 1px solid var(--line);
+            border-radius: 999px;
+            background: rgba(2, 6, 23, 0.72);
+            color: var(--muted);
+            font-family: "JetBrains Mono", Consolas, monospace;
+            font-size: 12px;
+        }
+
+        .packet-strip {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(128px, 1fr));
+            gap: 8px;
+            padding: 10px;
+            border: 1px solid var(--line);
+            border-radius: var(--radius);
+            background: rgba(15, 23, 42, 0.76);
+        }
+
+        .packet {
+            padding: 9px;
+            border: 1px solid rgba(56, 189, 248, 0.18);
+            border-radius: var(--radius);
+            background: rgba(2, 6, 23, 0.36);
+        }
+
+        .packet-route {
+            color: var(--blue);
+            font-family: "JetBrains Mono", Consolas, monospace;
+            font-size: 11px;
+            font-weight: 800;
+        }
+
+        .packet-name {
+            margin-top: 5px;
+            color: var(--text);
+            font-size: 13px;
+            font-weight: 850;
+        }
+
+        .packet-desc {
+            margin-top: 4px;
+            color: var(--muted);
+            font-size: 12px;
+            line-height: 1.42;
+        }
+
+        .sidebar {
+            min-height: 0;
+            display: grid;
+            grid-template-rows: auto auto minmax(0, 1fr);
+            gap: 10px;
+        }
+
+        .panel {
+            overflow: hidden;
+            border: 1px solid var(--line);
+            border-radius: var(--radius);
+            background: var(--panel);
+            box-shadow: 0 16px 34px rgba(0, 0, 0, 0.24);
+        }
+
+        .panel-head {
+            padding: 12px 14px;
+            border-bottom: 1px solid var(--line);
+            background: rgba(255, 255, 255, 0.035);
+        }
+
+        .eyebrow {
+            color: var(--blue);
+            font-family: "JetBrains Mono", Consolas, monospace;
+            font-size: 11px;
+            font-weight: 850;
+        }
+
+        .panel-title {
+            margin-top: 4px;
+            font-size: 19px;
+            font-weight: 900;
+        }
+
+        .panel-body {
+            padding: 14px;
+        }
+
+        .section-label {
+            margin: 14px 0 6px;
+            color: var(--faint);
+            font-size: 11px;
+            font-weight: 850;
+            letter-spacing: 0.04em;
+            text-transform: uppercase;
+        }
+
+        .copy {
+            color: #cbd5e1;
+            font-size: 14px;
+            line-height: 1.58;
+        }
+
+        .metric-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 8px;
+        }
+
+        .metric {
+            padding: 10px;
+            border: 1px solid var(--line);
+            border-radius: var(--radius);
+            background: rgba(2, 6, 23, 0.42);
+        }
+
+        .metric-label {
+            color: var(--faint);
+            font-size: 11px;
+        }
+
+        .metric-value {
+            margin-top: 4px;
+            font-family: "JetBrains Mono", Consolas, monospace;
+            font-size: 14px;
+            font-weight: 850;
+        }
+
+        .rollback {
+            margin-top: 10px;
+            padding: 10px;
+            border-left: 3px solid var(--red);
+            border-radius: 0 var(--radius) var(--radius) 0;
+            background: rgba(239, 68, 68, 0.08);
+            color: #fecaca;
+            font-size: 13px;
+            line-height: 1.5;
+        }
+
+        .timeline {
+            display: grid;
+            gap: 7px;
+        }
+
+        .timeline-row {
+            display: grid;
+            grid-template-columns: 70px 1fr;
+            gap: 8px;
+            padding: 8px;
+            border: 1px solid rgba(255, 255, 255, 0.06);
+            border-radius: var(--radius);
+            background: rgba(2, 6, 23, 0.36);
+        }
+
+        .timecode {
+            color: var(--blue);
+            font-family: "JetBrains Mono", Consolas, monospace;
+            font-size: 11px;
+            font-weight: 850;
+        }
+
+        .event {
+            color: #dbeafe;
+            font-size: 12px;
+            line-height: 1.45;
+        }
+
+        .log {
+            min-height: 0;
+            display: grid;
+            grid-template-rows: auto minmax(0, 1fr);
+        }
+
+        .log-list {
+            overflow: auto;
+            padding: 12px;
+            display: grid;
+            gap: 7px;
+        }
+
+        .progress {
+            height: 6px;
+            border-radius: 99px;
+            overflow: hidden;
+            background: rgba(148, 163, 184, 0.16);
+        }
+
+        .progress-fill {
+            height: 100%;
+            width: 14%;
+            border-radius: inherit;
+            background: linear-gradient(90deg, var(--blue), var(--purple), var(--green));
+            transition: width 0.25s ease;
+        }
+
+        @media (max-width: 1120px) {
+            body {
+                overflow: auto;
+            }
+
+            .app {
+                height: auto;
+                min-height: 100vh;
+            }
+
+            .workspace {
+                grid-template-columns: 1fr;
+            }
+
+            .canvas-shell {
+                min-height: 520px;
+            }
+        }
+
+        @media (max-width: 760px) {
+            .topbar {
+                grid-template-columns: 1fr;
+            }
+
+            .controls {
+                flex-wrap: wrap;
+            }
+
+            .state-map {
+                grid-template-columns: repeat(7, 110px);
+            }
+
+            .metric-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+    <main class="app">
+        <header class="topbar">
+            <div class="title">
+                <h1>OSPF 邻居状态机解析</h1>
+                <p>从 Down 到 Full，逐步看清楚两台路由器如何通过 Hello、DBD、LSR、LSU、LSAck 建立邻接。</p>
+                <div class="summary-chain">
+                    <span>Down</span>
+                    <span>Init</span>
+                    <span>2-Way</span>
+                    <span>ExStart</span>
+                    <span>Exchange</span>
+                    <span>Loading</span>
+                    <span>Full</span>
+                </div>
+            </div>
+            <div class="controls">
+                <div class="counter" id="counter">01 / 07</div>
+                <button class="btn" id="prevBtn" type="button">上一步</button>
+                <button class="btn primary" id="nextBtn" type="button">下一步</button>
+                <button class="btn" id="playBtn" type="button">自动演示</button>
+                <button class="btn" id="resetBtn" type="button">重置</button>
+            </div>
+        </header>
+
+        <section class="workspace">
+            <div class="main">
+                <nav class="state-map" id="stateMap" aria-label="OSPF 状态机"></nav>
+
+                <div class="canvas-shell">
+                    <canvas id="scene"></canvas>
+                    <div class="legend">
+                        <span class="chip">R1: 1.1.1.1</span>
+                        <span class="chip">R2: 2.2.2.2</span>
+                        <span class="chip" id="phaseChip">状态: Down</span>
+                    </div>
+                </div>
+
+                <div class="packet-strip" id="packetStrip"></div>
+            </div>
+
+            <aside class="sidebar">
+                <section class="panel">
+                    <div class="panel-head">
+                        <div class="eyebrow" id="phaseLabel">状态 01</div>
+                        <div class="panel-title" id="stateTitle">Down</div>
+                    </div>
+                    <div class="panel-body">
+                        <div class="metric-grid">
+                            <div class="metric">
+                                <div class="metric-label">邻居关系</div>
+                                <div class="metric-value" id="relationMetric">未发现</div>
+                            </div>
+                            <div class="metric">
+                                <div class="metric-label">LSDB 同步</div>
+                                <div class="metric-value" id="lsdbMetric">0%</div>
+                            </div>
+                        </div>
+                        <div class="section-label">状态含义</div>
+                        <p class="copy" id="meaningText"></p>
+                        <div class="section-label">进入条件</div>
+                        <p class="copy" id="entryText"></p>
+                        <div class="section-label">下一步为什么发生</div>
+                        <p class="copy" id="nextText"></p>
+                        <div class="rollback" id="rollbackText"></div>
+                    </div>
+                </section>
+
+                <section class="panel">
+                    <div class="panel-head">
+                        <div class="eyebrow">进度</div>
+                        <div class="progress"><div class="progress-fill" id="progressFill"></div></div>
+                    </div>
+                    <div class="panel-body">
+                        <div class="timeline" id="timeline"></div>
+                    </div>
+                </section>
+
+                <section class="panel log">
+                    <div class="panel-head">
+                        <div class="eyebrow">关键事件</div>
+                        <div class="panel-title">当前状态日志</div>
+                    </div>
+                    <div class="log-list" id="eventLog"></div>
+                </section>
+            </aside>
+        </section>
+    </main>
+
+    <script>
+        const states = [
+            {
+                id: 'down',
+                name: 'Down',
+                small: '尚未收到 Hello',
+                relation: '未发现',
+                lsdb: 0,
+                color: '#64748b',
+                meaning: 'Down 是邻居状态机的起点。此时本端还没有从对端收到有效 Hello，邻居关系尚不存在。',
+                entry: '接口启动、邻居超时、链路中断，都会回到 Down。',
+                next: '只要收到来自对端的 Hello 报文，就可以进入 Init。',
+                rollback: '常见回退：Dead Timer 超时、接口 Down、认证失败。',
+                packets: [],
+                events: ['接口已启用', '邻居表中暂无 R2', '等待 Hello 报文'],
+                flows: []
+            },
+            {
+                id: 'init',
+                name: 'Init',
+                small: '收到对端 Hello',
+                relation: '单向可见',
+                lsdb: 0,
+                color: '#38bdf8',
+                meaning: 'Init 表示本端已经收到对端 Hello，但对端 Hello 的邻居列表里还没有看到本端 Router ID。',
+                entry: 'R1 收到 R2 的 Hello，知道 R2 存在。',
+                next: '当双方都在 Hello 的邻居字段里看到对方 Router ID，就进入 2-Way。',
+                rollback: '常见回退：Hello 参数不匹配，例如 Area ID、Hello/Dead 间隔、认证方式不同。',
+                packets: [
+                    { from: 'R2', to: 'R1', name: 'Hello', desc: 'R1 首次发现 R2。' }
+                ],
+                events: ['R1 收到 R2 的 Hello', '邻居表创建 R2 条目', '通信仍是单向确认'],
+                flows: [{ from: 'r2', to: 'r1', label: 'Hello', color: '#38bdf8' }]
+            },
+            {
+                id: 'twoway',
+                name: '2-Way',
+                small: '双方互相看到',
+                relation: '双向通信',
+                lsdb: 5,
+                color: '#a78bfa',
+                meaning: '2-Way 表示双向通信已经建立。广播网络中，DR/BDR 选举通常在这个阶段完成。',
+                entry: '双方 Hello 报文的邻居字段都包含对方 Router ID。',
+                next: '如果需要建立完全邻接，例如点到点链路或 DR/BDR 相关邻居，就进入 ExStart。',
+                rollback: '常见回退：DR 选举变化、邻居参数变化、Hello 超时。',
+                packets: [
+                    { from: 'R1', to: 'R2', name: 'Hello', desc: 'R1 在邻居字段中列出 R2。' },
+                    { from: 'R2', to: 'R1', name: 'Hello', desc: 'R2 在邻居字段中列出 R1。' }
+                ],
+                events: ['双方确认彼此存在', '广播网络可进行 DR/BDR 选举', '判断是否需要完全邻接'],
+                flows: [
+                    { from: 'r1', to: 'r2', label: 'Hello', color: '#a78bfa' },
+                    { from: 'r2', to: 'r1', label: 'Hello', color: '#a78bfa' }
+                ]
+            },
+            {
+                id: 'exstart',
+                name: 'ExStart',
+                small: '协商主从',
+                relation: '准备同步',
+                lsdb: 12,
+                color: '#c084fc',
+                meaning: 'ExStart 用来协商数据库交换的主从关系，并确定 DBD 报文的初始序列号。',
+                entry: '双方决定要建立完全邻接后，开始发送空 DBD 报文协商主从。',
+                next: '主从关系和序列号确定后，进入 Exchange，开始交换 LSDB 摘要。',
+                rollback: '常见回退：MTU 不匹配、DBD 序列号异常、主从协商失败。',
+                packets: [
+                    { from: 'R1', to: 'R2', name: 'DBD 空报文', desc: '协商主从和初始序列号。' },
+                    { from: 'R2', to: 'R1', name: 'DBD 空报文', desc: '确认主从关系。' }
+                ],
+                events: ['开始 DBD 协商', '比较 Router ID 决定主从', '确定 DBD 序列号'],
+                flows: [
+                    { from: 'r1', to: 'r2', label: 'DBD', color: '#c084fc' },
+                    { from: 'r2', to: 'r1', label: 'DBD', color: '#c084fc' }
+                ]
+            },
+            {
+                id: 'exchange',
+                name: 'Exchange',
+                small: '交换 LSDB 摘要',
+                relation: '摘要交换',
+                lsdb: 38,
+                color: '#f59e0b',
+                meaning: 'Exchange 阶段双方通过 DBD 报文交换各自 LSDB 的 LSA 头部摘要。',
+                entry: 'DBD 主从关系建立后，双方开始发送包含 LSA 摘要的 DBD 报文。',
+                next: '如果发现自己缺少某些 LSA，就进入 Loading 请求完整内容。',
+                rollback: '常见回退：DBD 序列号错误、收到异常摘要、邻居重启。',
+                packets: [
+                    { from: 'R1', to: 'R2', name: 'DBD 摘要', desc: '描述 R1 已知的 LSA 头部。' },
+                    { from: 'R2', to: 'R1', name: 'DBD 摘要', desc: '描述 R2 已知的 LSA 头部。' }
+                ],
+                events: ['双方交换 LSA Header', '比较 LSDB 差异', '生成 Link State Request 列表'],
+                flows: [
+                    { from: 'r1', to: 'r2', label: 'DBD 摘要', color: '#f59e0b' },
+                    { from: 'r2', to: 'r1', label: 'DBD 摘要', color: '#f59e0b' }
+                ]
+            },
+            {
+                id: 'loading',
+                name: 'Loading',
+                small: '请求缺失 LSA',
+                relation: 'LSDB 补齐',
+                lsdb: 74,
+                color: '#22c55e',
+                meaning: 'Loading 阶段用于补齐 LSDB。缺什么 LSA，就通过 LSR 请求，对端用 LSU 返回完整 LSA，再用 LSAck 确认。',
+                entry: 'DBD 摘要对比后，发现本地缺少某些 LSA。',
+                next: '所有请求的 LSA 都收到并确认后，LSDB 同步完成，进入 Full。',
+                rollback: '常见回退：LSR 超时、LSU 丢失、LSAck 未确认、邻居重置。',
+                packets: [
+                    { from: 'R1', to: 'R2', name: 'LSR', desc: '请求缺失的 LSA。' },
+                    { from: 'R2', to: 'R1', name: 'LSU', desc: '发送完整 LSA 内容。' },
+                    { from: 'R1', to: 'R2', name: 'LSAck', desc: '确认已经收到 LSA。' }
+                ],
+                events: ['R1 请求缺失 LSA', 'R2 返回完整 LSA', 'R1 发送 LSAck 确认'],
+                flows: [
+                    { from: 'r1', to: 'r2', label: 'LSR', color: '#38bdf8' },
+                    { from: 'r2', to: 'r1', label: 'LSU', color: '#22c55e' },
+                    { from: 'r1', to: 'r2', label: 'LSAck', color: '#a78bfa' }
+                ]
+            },
+            {
+                id: 'full',
+                name: 'Full',
+                small: '邻接建立完成',
+                relation: '完全邻接',
+                lsdb: 100,
+                color: '#22c55e',
+                meaning: 'Full 是 OSPF 邻居关系的稳定状态，表示双方 LSDB 已经同步，可以进行 SPF 计算。',
+                entry: '所有缺失 LSA 都已同步，LSDB 达到一致。',
+                next: '后续通过周期性 Hello 维持邻居关系，拓扑变化时再泛洪新的 LSA。',
+                rollback: '常见回退：Hello 超时会回到 Down，接口参数变化可能重新经历状态机。',
+                packets: [
+                    { from: 'R1', to: 'R2', name: 'Hello 保活', desc: '周期性维持邻居关系。' },
+                    { from: 'R2', to: 'R1', name: 'Hello 保活', desc: '双方持续确认对端在线。' }
+                ],
+                events: ['LSDB 同步完成', '邻居状态进入 Full', '开始基于 LSDB 运行 SPF 计算'],
+                flows: [
+                    { from: 'r1', to: 'r2', label: 'Hello', color: '#22c55e' },
+                    { from: 'r2', to: 'r1', label: 'Hello', color: '#22c55e' }
+                ]
+            }
+        ];
+
+        const canvas = document.getElementById('scene');
+        const ctx = canvas.getContext('2d');
+        const stateMap = document.getElementById('stateMap');
+        const packetStrip = document.getElementById('packetStrip');
+        const counter = document.getElementById('counter');
+        const prevBtn = document.getElementById('prevBtn');
+        const nextBtn = document.getElementById('nextBtn');
+        const playBtn = document.getElementById('playBtn');
+        const resetBtn = document.getElementById('resetBtn');
+        const phaseChip = document.getElementById('phaseChip');
+        const phaseLabel = document.getElementById('phaseLabel');
+        const stateTitle = document.getElementById('stateTitle');
+        const relationMetric = document.getElementById('relationMetric');
+        const lsdbMetric = document.getElementById('lsdbMetric');
+        const meaningText = document.getElementById('meaningText');
+        const entryText = document.getElementById('entryText');
+        const nextText = document.getElementById('nextText');
+        const rollbackText = document.getElementById('rollbackText');
+        const timeline = document.getElementById('timeline');
+        const eventLog = document.getElementById('eventLog');
+        const progressFill = document.getElementById('progressFill');
+
+        let current = 0;
+        let time = 0;
+        let dpr = window.devicePixelRatio || 1;
+        let stateStarted = performance.now();
+        let autoTimer = null;
+        let isPlaying = false;
+
+        const routers = {
+            r1: { name: 'R1', rid: '1.1.1.1', x: 0, y: 0, color: '#38bdf8' },
+            r2: { name: 'R2', rid: '2.2.2.2', x: 0, y: 0, color: '#a78bfa' }
+        };
+
+        function resizeCanvas() {
+            const box = canvas.parentElement.getBoundingClientRect();
+            dpr = window.devicePixelRatio || 1;
+            canvas.width = Math.max(1, Math.floor(box.width * dpr));
+            canvas.height = Math.max(1, Math.floor(box.height * dpr));
+            ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        }
+
+        function size() {
+            return { w: canvas.width / dpr, h: canvas.height / dpr };
+        }
+
+        function phaseProgress() {
+            return ((performance.now() - stateStarted) % 4200) / 4200;
+        }
+
+        function layoutRouters() {
+            const { w, h } = size();
+            routers.r1.x = w * 0.28;
+            routers.r1.y = h * 0.55;
+            routers.r2.x = w * 0.72;
+            routers.r2.y = h * 0.55;
+        }
+
+        function drawBackground() {
+            const { w, h } = size();
+            const state = states[current];
+            ctx.clearRect(0, 0, w, h);
+
+            const glow = ctx.createRadialGradient(w / 2, h * 0.5, 20, w / 2, h * 0.5, Math.max(w, h) * 0.72);
+            glow.addColorStop(0, `${state.color}18`);
+            glow.addColorStop(0.58, 'rgba(15, 23, 42, 0.16)');
+            glow.addColorStop(1, 'rgba(2, 6, 23, 0.82)');
+            ctx.fillStyle = glow;
+            ctx.fillRect(0, 0, w, h);
+
+            ctx.save();
+            ctx.globalAlpha = 0.18;
+            ctx.strokeStyle = '#94a3b8';
+            const spacing = 42;
+            const shift = (time * 10) % spacing;
+            for (let x = -spacing + shift; x < w + spacing; x += spacing) {
+                ctx.beginPath();
+                ctx.moveTo(x, 0);
+                ctx.lineTo(x, h);
+                ctx.stroke();
+            }
+            for (let y = -spacing + shift; y < h + spacing; y += spacing) {
+                ctx.beginPath();
+                ctx.moveTo(0, y);
+                ctx.lineTo(w, y);
+                ctx.stroke();
+            }
+            ctx.restore();
+        }
+
+        function drawLink() {
+            const state = states[current];
+            const r1 = routers.r1;
+            const r2 = routers.r2;
+            const active = current > 0;
+            ctx.save();
+            ctx.strokeStyle = active ? `${state.color}90` : 'rgba(100, 116, 139, 0.45)';
+            ctx.lineWidth = current >= 6 ? 6 : current >= 3 ? 4 : 3;
+            if (current < 6) {
+                ctx.setLineDash([10, 8]);
+                ctx.lineDashOffset = -time * 24;
+            }
+            ctx.beginPath();
+            ctx.moveTo(r1.x, r1.y);
+            ctx.lineTo(r2.x, r2.y);
+            ctx.stroke();
+            ctx.setLineDash([]);
+
+            const mx = (r1.x + r2.x) / 2;
+            const my = (r1.y + r2.y) / 2;
+            ctx.fillStyle = 'rgba(2, 6, 23, 0.78)';
+            ctx.strokeStyle = `${state.color}70`;
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.roundRect(mx - 68, my - 17, 136, 34, 9);
+            ctx.fill();
+            ctx.stroke();
+            ctx.fillStyle = state.color;
+            ctx.font = '800 12px Consolas, monospace';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(state.name, mx, my + 1);
+            ctx.restore();
+        }
+
+        function drawRouter(router) {
+            const pulse = Math.sin(time * 2) * 4;
+            ctx.save();
+            ctx.shadowColor = router.color;
+            ctx.shadowBlur = 26;
+            ctx.fillStyle = router.color;
+            ctx.beginPath();
+            ctx.arc(router.x, router.y, 42, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.restore();
+
+            ctx.strokeStyle = 'rgba(255,255,255,0.45)';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.arc(router.x, router.y, 42, 0, Math.PI * 2);
+            ctx.stroke();
+
+            ctx.strokeStyle = `${router.color}80`;
+            ctx.beginPath();
+            ctx.arc(router.x, router.y, 58 + pulse, 0, Math.PI * 2);
+            ctx.stroke();
+
+            ctx.fillStyle = '#fff';
+            ctx.font = '900 18px Inter, sans-serif';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(router.name, router.x, router.y);
+            ctx.font = '700 11px Consolas, monospace';
+            ctx.fillText(router.rid, router.x, router.y + 62);
+        }
+
+        function drawPackets() {
+            const state = states[current];
+            const progressBase = phaseProgress();
+            state.flows.forEach((flow, index) => {
+                const from = routers[flow.from];
+                const to = routers[flow.to];
+                const progress = (progressBase + index * 0.28) % 1;
+                const x = from.x + (to.x - from.x) * progress;
+                const y = from.y + (to.y - from.y) * progress;
+
+                ctx.save();
+                ctx.shadowColor = flow.color;
+                ctx.shadowBlur = 18;
+                ctx.fillStyle = flow.color;
+                ctx.beginPath();
+                ctx.roundRect(x - 22, y - 14, 44, 28, 8);
+                ctx.fill();
+                ctx.restore();
+
+                ctx.fillStyle = '#06111f';
+                ctx.font = '900 10px Consolas, monospace';
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.fillText(flow.label, x, y + 1);
+            });
+        }
+
+        function drawLsdbBars() {
+            const { w } = size();
+            const state = states[current];
+            const x = w / 2 - 150;
+            const y = 92;
+            ctx.fillStyle = 'rgba(2, 6, 23, 0.78)';
+            ctx.strokeStyle = `${state.color}70`;
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.roundRect(x, y, 300, 78, 10);
+            ctx.fill();
+            ctx.stroke();
+
+            ctx.fillStyle = state.color;
+            ctx.font = '800 12px Consolas, monospace';
+            ctx.textAlign = 'left';
+            ctx.fillText('LSDB 同步进度', x + 14, y + 24);
+
+            ctx.fillStyle = 'rgba(148, 163, 184, 0.2)';
+            ctx.beginPath();
+            ctx.roundRect(x + 14, y + 42, 272, 12, 6);
+            ctx.fill();
+            ctx.fillStyle = state.color;
+            ctx.beginPath();
+            ctx.roundRect(x + 14, y + 42, 272 * (state.lsdb / 100), 12, 6);
+            ctx.fill();
+            ctx.fillStyle = '#e2e8f0';
+            ctx.font = '800 12px Consolas, monospace';
+            ctx.fillText(`${state.lsdb}%`, x + 14, y + 68);
+        }
+
+        function drawHud() {
+            const state = states[current];
+            ctx.fillStyle = 'rgba(2, 6, 23, 0.76)';
+            ctx.strokeStyle = `${state.color}80`;
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.roundRect(18, 18, 370, 72, 10);
+            ctx.fill();
+            ctx.stroke();
+
+            ctx.fillStyle = state.color;
+            ctx.font = '800 12px Consolas, monospace';
+            ctx.textAlign = 'left';
+            ctx.fillText(`状态 ${String(current + 1).padStart(2, '0')} / ${state.name}`, 34, 42);
+            ctx.fillStyle = '#f8fafc';
+            ctx.font = '900 20px Inter, sans-serif';
+            ctx.fillText(state.relation, 34, 68);
+        }
+
+        function render() {
+            time += 0.016;
+            layoutRouters();
+            drawBackground();
+            drawLsdbBars();
+            drawLink();
+            drawPackets();
+            drawRouter(routers.r1);
+            drawRouter(routers.r2);
+            drawHud();
+            requestAnimationFrame(render);
+        }
+
+        function renderStateMap() {
+            stateMap.innerHTML = states.map((state, index) => {
+                const classes = ['state-node'];
+                if (index === current) classes.push('active');
+                if (index < current) classes.push('done');
+                return `
+                    <button class="${classes.join(' ')}" type="button" data-state="${index}">
+                        <span class="state-index">${index + 1}</span>
+                        <span class="state-name">${state.name}</span>
+                        <span class="state-small">${state.small}</span>
+                    </button>
+                `;
+            }).join('');
+
+            stateMap.querySelectorAll('.state-node').forEach(button => {
+                button.addEventListener('click', () => {
+                    stopAutoPlay();
+                    setState(Number(button.dataset.state));
+                });
+            });
+        }
+
+        function renderPacketStrip() {
+            const state = states[current];
+            packetStrip.innerHTML = state.packets.length
+                ? state.packets.map(packet => `
+                    <div class="packet">
+                        <div class="packet-route">${packet.from} -> ${packet.to}</div>
+                        <div class="packet-name">${packet.name}</div>
+                        <div class="packet-desc">${packet.desc}</div>
+                    </div>
+                `).join('')
+                : '<div class="packet"><div class="packet-name">暂无报文</div><div class="packet-desc">等待接收第一个 Hello 报文。</div></div>';
+        }
+
+        function renderSidebar() {
+            const state = states[current];
+            counter.textContent = `${String(current + 1).padStart(2, '0')} / ${String(states.length).padStart(2, '0')}`;
+            phaseChip.textContent = `状态: ${state.name}`;
+            phaseLabel.textContent = `状态 ${String(current + 1).padStart(2, '0')}`;
+            stateTitle.textContent = state.name;
+            relationMetric.textContent = state.relation;
+            lsdbMetric.textContent = `${state.lsdb}%`;
+            meaningText.textContent = state.meaning;
+            entryText.textContent = state.entry;
+            nextText.textContent = state.next;
+            rollbackText.textContent = state.rollback;
+            progressFill.style.width = `${((current + 1) / states.length) * 100}%`;
+            prevBtn.disabled = current === 0;
+            nextBtn.disabled = current === states.length - 1;
+            playBtn.textContent = isPlaying ? '暂停演示' : '自动演示';
+            playBtn.classList.toggle('playing', isPlaying);
+
+            timeline.innerHTML = states.map((item, index) => `
+                <div class="timeline-row">
+                    <div class="timecode">${index < current ? '已完成' : index === current ? '当前' : '待播放'}</div>
+                    <div class="event">${index + 1}. ${item.name} - ${item.small}</div>
+                </div>
+            `).join('');
+
+            eventLog.innerHTML = state.events.map((event, index) => `
+                <div class="timeline-row">
+                    <div class="timecode">T+${String(index + 1).padStart(2, '0')}</div>
+                    <div class="event">${event}</div>
+                </div>
+            `).join('');
+        }
+
+        function setState(index) {
+            current = Math.max(0, Math.min(states.length - 1, index));
+            stateStarted = performance.now();
+            renderStateMap();
+            renderPacketStrip();
+            renderSidebar();
+        }
+
+        function startAutoPlay() {
+            if (isPlaying) return;
+            isPlaying = true;
+            renderSidebar();
+            autoTimer = window.setInterval(() => {
+                if (current >= states.length - 1) {
+                    stopAutoPlay();
+                    return;
+                }
+                setState(current + 1);
+            }, 4200);
+        }
+
+        function stopAutoPlay() {
+            isPlaying = false;
+            if (autoTimer) {
+                window.clearInterval(autoTimer);
+                autoTimer = null;
+            }
+            renderSidebar();
+        }
+
+        function toggleAutoPlay() {
+            if (isPlaying) {
+                stopAutoPlay();
+            } else {
+                startAutoPlay();
+            }
+        }
+
+        prevBtn.addEventListener('click', () => {
+            stopAutoPlay();
+            setState(current - 1);
+        });
+        nextBtn.addEventListener('click', () => {
+            stopAutoPlay();
+            setState(current + 1);
+        });
+        playBtn.addEventListener('click', toggleAutoPlay);
+        resetBtn.addEventListener('click', () => {
+            stopAutoPlay();
+            setState(0);
+        });
+
+        window.addEventListener('resize', resizeCanvas);
+        resizeCanvas();
+        renderStateMap();
+        renderPacketStrip();
+        renderSidebar();
+        render();
+    </script>
+</body>
+</html>
